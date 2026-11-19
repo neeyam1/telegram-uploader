@@ -7,7 +7,7 @@ It keeps a log, so if the same media shows up again later it is skipped and dele
 ## What it does
 
 - **Scans the whole phone.** That means internal storage and SD cards, every folder, whatever it's called.
-  It also looks in WhatsApp's folders (`Android/media/...`) and in folders that contain a `.nomedia` file.
+  It also looks in WhatsApp's folders (`Android/media/...`). Folders hidden from the gallery (they contain a `.nomedia` file) are skipped by default.
 - **Folders become blocks in the group.** For each folder:
   1. A header message: `📂 Folder name`, its path, and the number of files
   2. All the media
@@ -67,7 +67,8 @@ Keep Termux open, or pull down the notification and tap "Acquire wakelock".
 | key | default | meaning |
 |---|---|---|
 | `exclude_paths` | Android/data, Android/obb, Telegram folders | folders never scanned |
-| `skip_hidden_folders` | `true` | skip `.thumbnails`, `.trash` and other hidden folders |
+| `skip_hidden_folders` | `true` | skip `.thumbnails`, `.trash` and other hidden folders, plus `.trashed-` files (already in the bin) |
+| `skip_nomedia_folders` | `true` | skip folders hidden from the gallery, e.g. WhatsApp "Sent" and "Private". Set to `false` to upload those too |
 | `min_file_size_kb` | `0` | set to e.g. `20` to ignore tiny app icons |
 | `max_file_size_mb` | `2000` | use `4000` if you have Telegram Premium |
 | `delete_after_upload` | `true` | delete the original after upload |

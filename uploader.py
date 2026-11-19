@@ -96,7 +96,9 @@ DEFAULT_CONFIG = {
         "/storage/emulated/0/Android/media/org.telegram.plus",
         "/storage/emulated/0/Android/media/org.thunderdog.challegram",
     ],
-    "skip_hidden_folders": True,       # .thumbnails, .trash, .cache ...
+    "skip_hidden_folders": True,       # .thumbnails, .trash, .cache ... and .trashed-* files
+    "skip_nomedia_folders": True,      # skip folders hidden from the gallery (.nomedia),
+                                       # e.g. WhatsApp "Sent"/"Private" - media you can't see
     "min_file_size_kb": 0,             # raise (e.g. 20) to ignore tiny app icons
     "min_file_age_seconds": 30,        # skip files still being written / recorded
     "max_file_size_mb": 2000,          # 2000 normal account, 4000 for Premium
@@ -237,6 +239,7 @@ def scan_media(cfg: dict) -> dict:
     min_age = cfg["min_file_age_seconds"]
     t_now = time.time()
     folders = {}
+    hidden_skipped = []
 
     def excluded(path):
         path = os.path.normpath(path)
@@ -257,11 +260,18 @@ def scan_media(cfg: dict) -> dict:
                 keep.append(d)
             dirnames[:] = keep
 
-            # a ".nomedia" file does NOT stop us - user wants everything
+            # folder hidden from the gallery -> skip it and everything below it
+            if cfg.get("skip_nomedia_folders", True) and ".nomedia" in filenames:
+                dirnames[:] = []
+                hidden_skipped.append(dirpath)
+                continue
+
             files = []
             for fn in filenames:
                 if Path(fn).suffix.lower() not in MEDIA_EXT:
                     continue
+                if cfg["skip_hidden_folders"] and fn.startswith("."):
+                    continue  # .trashed-123-IMG.jpg = already in Android's bin
                 full = os.path.join(dirpath, fn)
                 try:
                     st = os.stat(full)
@@ -275,6 +285,8 @@ def scan_media(cfg: dict) -> dict:
             if files:
                 files.sort(key=lambda p: natural_key(os.path.basename(p)))
                 folders[dirpath] = files
+    if hidden_skipped:
+        log.info(f"Skipped {len(hidden_skipped)} gallery-hidden folders (.nomedia).")
     return folders
 
 
@@ -399,6 +411,7 @@ class Uploader:
         self.dry = dry_run
         self.group = None
         self.end_sticker = None
+        self.cur_line = ""
         self.stats = dict(uploaded=0, duplicates=0, failed=0, skipped=0, folders=0)
 
     # ---------- helpers ----------
@@ -446,9 +459,6 @@ class Uploader:
             return "Phone storage (root)"
         return name or folder
 
-    @staticmethod
-    def short_path(folder: str) -> str:
-        return folder.replace("/storage/emulated/0", "Internal").lstrip("/")
 
     # ---------- upload a single file ----------
     async def upload_one(self, path: str, idx: int, total: int):
@@ -463,9 +473,9 @@ class Uploader:
 
         def progress(sent, total_bytes):
             pct = int(sent * 100 / total_bytes) if total_bytes else 100
-            if pct // 10 != last_pct[0] // 10:
+            if pct // 5 != last_pct[0] // 5:
                 last_pct[0] = pct
-                print(f"\r    {pct:3d}%", end="", flush=True)
+                print(f"\r\033[K{self.cur_line}  {pct}%", end="", flush=True)
 
         try:
             kwargs = dict(caption=caption, parse_mode="html", progress_callback=progress)
@@ -533,7 +543,7 @@ class Uploader:
                 return await self.send(lambda: self.client.send_file(
                     self.group, path, force_document=True, **kwargs), name)
         finally:
-            print("\r", end="")
+            print("\r\033[K", end="", flush=True)
             for t in tmp_files:
                 try:
                     os.remove(t)
@@ -563,7 +573,7 @@ class Uploader:
 
             if self.db.is_uploaded(sha) or sha in seen_now:
                 self.stats["duplicates"] += 1
-                log.info(f"  DUPLICATE (already in group) -> deleting: {p}")
+                log.info(f"  duplicate, already in group -> deleted: {os.path.basename(p)}")
                 if self.cfg["delete_duplicates"]:
                     self.remove_file(p, sha, "deleted_duplicate")
                 continue
@@ -574,7 +584,7 @@ class Uploader:
             return
 
         label = self.folder_label(folder)
-        log.info(f"\n📂 {label}  ({len(pending)} new)  [{folder}]")
+        log.info(f"\n📂 {label}  ({len(pending)} new)")
         if self.dry:
             for p, _, size in pending:
                 log.info(f"   would upload: {os.path.basename(p)}  ({size / 1e6:.1f} MB)")
@@ -583,9 +593,7 @@ class Uploader:
             return
 
         # 2) folder header message
-        header = (f"📂 <b>{html.escape(label)}</b>\n"
-                  f"<code>{html.escape(self.short_path(folder))}</code>\n"
-                  f"🖼 {len(pending)} media")
+        header = f"📂 <b>{html.escape(label)}</b>\n🖼 {len(pending)} media"
         await self.send(lambda: self.client.send_message(
             self.group, header, parse_mode="html"), "header")
 
@@ -593,10 +601,10 @@ class Uploader:
         done = 0
         for i, (p, sha, size) in enumerate(pending, 1):
             name = os.path.basename(p)
-            log.info(f"  [{i}/{len(pending)}] {name}  ({size / 1e6:.1f} MB)")
+            self.cur_line = f"  [{i}/{len(pending)}] {name}  ({size / 1e6:.1f} MB)"
             try:
                 if not os.path.exists(p):
-                    log.warning("    file vanished, skipped")
+                    log.warning(f"{self.cur_line}  - file vanished, skipped")
                     continue
                 msg = await self.upload_one(p, i, len(pending))
                 msg_id = msg.id if msg else None
@@ -604,12 +612,12 @@ class Uploader:
                 self.db.event("uploaded", p, sha, f"msg {msg_id}")
                 self.stats["uploaded"] += 1
                 done += 1
-                log.info("    ✔ uploaded")
+                log.info(f"{self.cur_line}  ✔")
                 if self.cfg["delete_after_upload"]:
                     self.remove_file(p, sha, "deleted_after_upload")
             except Exception as e:
                 self.stats["failed"] += 1
-                log.error(f"    ✘ FAILED: {e}")
+                log.error(f"{self.cur_line}  ✘ FAILED: {e}")
                 self.db.event("failed", p, sha, repr(e))
             await asyncio.sleep(self.cfg["delay_between_uploads_sec"])
 
