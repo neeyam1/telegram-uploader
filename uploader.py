@@ -663,6 +663,33 @@ async def pick_group(client: TelegramClient, cfg: dict):
             print(f"Could not use that ({e}). Try again.")
 
 
+def ask_phone() -> str:
+    while True:
+        p = re.sub(r"[\s\-()]", "", input(
+            "Phone number WITH country code (e.g. +91XXXXXXXXXX): ").strip())
+        if re.fullmatch(r"\d{10}", p):
+            print("  That looks like a number without country code.")
+        elif re.fullmatch(r"\+?\d{8,15}", p):
+            return p if p.startswith("+") else "+" + p
+        print("  Please include your country code, e.g. +91 for India -> +91XXXXXXXXXX")
+
+
+async def login(client: TelegramClient):
+    """Log in, re-asking for the phone number if Telegram rejects it."""
+    await client.connect()
+    if await client.is_user_authorized():
+        return
+    print("\n=== Telegram login (only needed once) ===")
+    while True:
+        try:
+            await client.start(phone=ask_phone)
+            return
+        except errors.PhoneNumberInvalidError:
+            print("  Telegram says that phone number is invalid. Try again.")
+        except errors.PhoneNumberBannedError:
+            sys.exit("This phone number is banned by Telegram.")
+
+
 async def resolve_group(client: TelegramClient, cfg: dict):
     g = cfg["group"]
     try:
@@ -695,7 +722,7 @@ async def main():
                     "Install with:  pkg install python-pillow")
 
     client = TelegramClient(SESSION_FILE, cfg["api_id"], cfg["api_hash"])
-    await client.start()   # asks for phone number + login code the first time
+    await login(client)
 
     if args.setup or not cfg.get("group"):
         await pick_group(client, cfg)
