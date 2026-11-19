@@ -1,0 +1,8 @@
+# secrets / personal state - NEVER commit
+config.json
+*.session
+*.session-journal
+uploaded.db
+uploader.log
+tmp/
+__pycache__/
